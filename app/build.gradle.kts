@@ -37,7 +37,7 @@ android {
         variant.outputs
             .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
             .forEach { output ->
-                val outputFileName = "lchat-${variant.versionName}-${variant.name}.apk"
+                val outputFileName = "localchat-${variant.versionName}-${variant.name}.apk"
                 output.outputFileName = outputFileName
             }
     }
