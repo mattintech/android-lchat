@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/lobbyFragment">
+
+    <fragment
+        android:id="@+id/lobbyFragment"
+        android:name="com.mattintech.lchat.ui.LobbyFragment"
+        android:label="Lobby"
+        tools:layout="@layout/fragment_lobby">
+        <action
+            android:id="@+id/action_lobby_to_chat"
+            app:destination="@id/chatFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/chatFragment"
+        android:name="com.mattintech.lchat.ui.ChatFragment"
+        android:label="Chat"
+        tools:layout="@layout/fragment_chat">
+        <argument
+            android:name="roomName"
+            app:argType="string" />
+        <argument
+            android:name="userName"
+            app:argType="string" />
+        <argument
+            android:name="isHost"
+            app:argType="boolean" />
+    </fragment>
+
+</navigation>

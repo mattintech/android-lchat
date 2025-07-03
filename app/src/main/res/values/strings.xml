@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">LocalChat</string>
+    <string name="host_mode">Host Mode</string>
+    <string name="client_mode">Join Mode</string>
+    <string name="room_name">Room Name</string>
+    <string name="your_name">Your Name</string>
+    <string name="start_hosting">Start Hosting</string>
+    <string name="search_rooms">Search Rooms</string>
+    <string name="send">Send</string>
+    <string name="type_message">Type a message...</string>
+    <string name="connected_users">Connected Users</string>
+    <string name="no_rooms_found">No rooms found nearby</string>
+    <string name="connecting">Connecting...</string>
+    <string name="permission_required">Location permission is required for Wi-Fi Aware</string>
+</resources>
