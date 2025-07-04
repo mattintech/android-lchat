@@ -7,16 +7,17 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.ViewModelProvider
+import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
 import com.mattintech.lchat.R
 import com.mattintech.lchat.databinding.FragmentLobbyBinding
 import com.mattintech.lchat.viewmodel.LobbyEvent
 import com.mattintech.lchat.viewmodel.LobbyState
 import com.mattintech.lchat.viewmodel.LobbyViewModel
-import com.mattintech.lchat.viewmodel.ViewModelFactory
 import com.mattintech.lchat.utils.LOG_PREFIX
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint
 class LobbyFragment : Fragment() {
     
     companion object {
@@ -26,7 +27,7 @@ class LobbyFragment : Fragment() {
     private var _binding: FragmentLobbyBinding? = null
     private val binding get() = _binding!!
     
-    private lateinit var viewModel: LobbyViewModel
+    private val viewModel: LobbyViewModel by viewModels()
     
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -41,9 +42,6 @@ class LobbyFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         Log.d(TAG, "onViewCreated")
-        
-        val factory = ViewModelFactory(requireContext())
-        viewModel = ViewModelProvider(this, factory)[LobbyViewModel::class.java]
         
         setupUI()
         observeViewModel()

@@ -5,7 +5,9 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mattintech.lchat.repository.ChatRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 sealed class LobbyState {
     object Idle : LobbyState()
@@ -23,7 +25,8 @@ sealed class LobbyEvent {
     data class ShowError(val message: String) : LobbyEvent()
 }
 
-class LobbyViewModel(
+@HiltViewModel
+class LobbyViewModel @Inject constructor(
     private val chatRepository: ChatRepository
 ) : ViewModel() {
     
