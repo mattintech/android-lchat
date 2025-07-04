@@ -35,12 +35,12 @@ class MessageAdapter : ListAdapter<Message, MessageAdapter.MessageViewHolder>(Me
     ) : RecyclerView.ViewHolder(binding.root) {
         
         fun bind(message: Message) {
-            binding.senderName.text = message.senderName
+            binding.senderName.text = message.userName
             binding.messageContent.text = message.content
             binding.timestamp.text = timeFormat.format(Date(message.timestamp))
             
             val layoutParams = binding.messageCard.layoutParams as ConstraintLayout.LayoutParams
-            if (message.isLocal) {
+            if (message.isOwnMessage) {
                 layoutParams.startToStart = ConstraintLayout.LayoutParams.UNSET
                 layoutParams.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
                 binding.messageCard.setCardBackgroundColor(

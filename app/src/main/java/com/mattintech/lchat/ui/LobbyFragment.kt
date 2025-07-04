@@ -1,20 +1,29 @@
 package com.mattintech.lchat.ui
 
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.ViewModelProvider
+import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
 import com.mattintech.lchat.R
 import com.mattintech.lchat.databinding.FragmentLobbyBinding
-import com.mattintech.lchat.network.WifiAwareManager
-import com.mattintech.lchat.network.WifiAwareManagerSingleton
+import com.mattintech.lchat.viewmodel.LobbyEvent
+import com.mattintech.lchat.viewmodel.LobbyState
+import com.mattintech.lchat.viewmodel.LobbyViewModel
 import com.mattintech.lchat.utils.LOG_PREFIX
+import dagger.hilt.android.AndroidEntryPoint
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 
+@AndroidEntryPoint
 class LobbyFragment : Fragment() {
     
     companion object {
@@ -24,7 +33,7 @@ class LobbyFragment : Fragment() {
     private var _binding: FragmentLobbyBinding? = null
     private val binding get() = _binding!!
     
-    private lateinit var wifiAwareManager: WifiAwareManager
+    private val viewModel: LobbyViewModel by viewModels()
     
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -40,13 +49,23 @@ class LobbyFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         Log.d(TAG, "onViewCreated")
         
-        Log.d(TAG, "Getting WifiAwareManager singleton")
-        wifiAwareManager = WifiAwareManagerSingleton.getInstance(requireContext())
-        
         setupUI()
+        observeViewModel()
     }
     
     private fun setupUI() {
+        binding.nameInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            
+            override fun afterTextChanged(s: Editable?) {
+                s?.toString()?.trim()?.let { name ->
+                    viewModel.saveUserName(name)
+                }
+            }
+        })
+        
         binding.modeRadioGroup.setOnCheckedChangeListener { _, checkedId ->
             when (checkedId) {
                 R.id.hostRadio -> {
@@ -64,53 +83,77 @@ class LobbyFragment : Fragment() {
         }
         
         binding.actionButton.setOnClickListener {
-            val userName = binding.nameInput.text?.toString()?.trim()
-            
-            if (userName.isNullOrEmpty()) {
-                Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            val userName = binding.nameInput.text?.toString()?.trim() ?: ""
             
             when (binding.modeRadioGroup.checkedRadioButtonId) {
                 R.id.hostRadio -> {
-                    val roomName = binding.roomInput.text?.toString()?.trim()
-                    if (roomName.isNullOrEmpty()) {
-                        Toast.makeText(context, "Please enter a room name", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    }
-                    startHostMode(roomName, userName)
+                    val roomName = binding.roomInput.text?.toString()?.trim() ?: ""
+                    viewModel.startHostMode(roomName, userName)
                 }
                 R.id.clientRadio -> {
-                    startClientMode(userName)
+                    viewModel.startClientMode(userName)
+                }
+            }
+        }
+    }
+    
+    private fun observeViewModel() {
+        // Collect saved user name
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.savedUserName.collect { savedName ->
+                    if (!savedName.isNullOrEmpty() && binding.nameInput.text.isNullOrEmpty()) {
+                        binding.nameInput.setText(savedName)
+                    }
                 }
             }
         }
         
-        wifiAwareManager.setConnectionCallback { roomName, isConnected ->
-            Log.d(TAG, "Connection callback - room: $roomName, connected: $isConnected")
-            activity?.runOnUiThread {
-                if (isConnected && binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                    val userName = binding.nameInput.text?.toString()?.trim() ?: ""
-                    navigateToChat(roomName, userName, false)
-                } else if (!isConnected && binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                    binding.noRoomsText.text = "Failed to connect to $roomName. Ensure Wi-Fi is enabled on both devices."
-                    Toast.makeText(context, "Connection failed. Check Wi-Fi is enabled.", Toast.LENGTH_LONG).show()
+        // Collect state
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    when (state) {
+                        is LobbyState.Idle -> {
+                            binding.noRoomsText.visibility = View.GONE
+                        }
+                        is LobbyState.Connecting -> {
+                            if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                                binding.noRoomsText.visibility = View.VISIBLE
+                                binding.noRoomsText.text = getString(R.string.connecting)
+                            }
+                        }
+                        is LobbyState.Connected -> {
+                            if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                                val userName = binding.nameInput.text?.toString()?.trim() ?: ""
+                                viewModel.onConnectedToRoom(state.roomName, userName)
+                            }
+                        }
+                        is LobbyState.Error -> {
+                            binding.noRoomsText.visibility = View.VISIBLE
+                            binding.noRoomsText.text = state.message
+                            Toast.makeText(context, state.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             }
         }
-    }
-    
-    private fun startHostMode(roomName: String, userName: String) {
-        Log.d(TAG, "Starting host mode - room: $roomName, user: $userName")
-        wifiAwareManager.startHostMode(roomName)
-        navigateToChat(roomName, userName, true)
-    }
-    
-    private fun startClientMode(userName: String) {
-        Log.d(TAG, "Starting client mode - user: $userName")
-        binding.noRoomsText.visibility = View.VISIBLE
-        binding.noRoomsText.text = getString(R.string.connecting)
-        wifiAwareManager.startClientMode()
+        
+        // Collect events
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.events.collect { event ->
+                    when (event) {
+                        is LobbyEvent.NavigateToChat -> {
+                            navigateToChat(event.roomName, event.userName, event.isHost)
+                        }
+                        is LobbyEvent.ShowError -> {
+                            Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
     }
     
     private fun navigateToChat(roomName: String, userName: String, isHost: Boolean) {

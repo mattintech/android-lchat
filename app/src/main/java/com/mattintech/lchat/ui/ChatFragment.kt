@@ -6,16 +6,21 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.navArgs
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.mattintech.lchat.data.Message
+import com.mattintech.lchat.R
 import com.mattintech.lchat.databinding.FragmentChatBinding
-import com.mattintech.lchat.network.WifiAwareManager
-import com.mattintech.lchat.network.WifiAwareManagerSingleton
+import com.mattintech.lchat.repository.ChatRepository
 import com.mattintech.lchat.ui.adapters.MessageAdapter
 import com.mattintech.lchat.utils.LOG_PREFIX
-import java.util.UUID
+import com.mattintech.lchat.viewmodel.ChatViewModel
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 
+@AndroidEntryPoint
 class ChatFragment : Fragment() {
     
     companion object {
@@ -26,10 +31,8 @@ class ChatFragment : Fragment() {
     private val binding get() = _binding!!
     
     private val args: ChatFragmentArgs by navArgs()
-    private lateinit var wifiAwareManager: WifiAwareManager
+    private val viewModel: ChatViewModel by viewModels()
     private lateinit var messageAdapter: MessageAdapter
-    private val messages = mutableListOf<Message>()
-    private val userId = UUID.randomUUID().toString()
     
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -45,8 +48,11 @@ class ChatFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         Log.d(TAG, "onViewCreated - room: ${args.roomName}, user: ${args.userName}, isHost: ${args.isHost}")
         
+        viewModel.initialize(args.roomName, args.userName, args.isHost)
+        
         setupUI()
-        setupWifiAware()
+        observeViewModel()
+        updateRoomInfo()
     }
     
     private fun setupUI() {
@@ -68,58 +74,72 @@ class ChatFragment : Fragment() {
         }
     }
     
-    private fun setupWifiAware() {
-        wifiAwareManager = WifiAwareManagerSingleton.getInstance(requireContext())
-        
-        wifiAwareManager.setMessageCallback { senderId, senderName, content ->
-            Log.d(TAG, "Message received - from: $senderName, content: $content")
-            val message = Message(
-                id = UUID.randomUUID().toString(),
-                senderId = senderId,
-                senderName = senderName,
-                content = content,
-                timestamp = System.currentTimeMillis(),
-                isLocal = senderId == userId
-            )
-            
-            activity?.runOnUiThread {
-                messages.add(message)
-                messageAdapter.submitList(messages.toList())
-                binding.messagesRecyclerView.smoothScrollToPosition(messages.size - 1)
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            viewModel.messages.collect { messages ->
+                messageAdapter.submitList(messages)
+                if (messages.isNotEmpty()) {
+                    binding.messagesRecyclerView.smoothScrollToPosition(messages.size - 1)
+                }
             }
         }
         
-        // No need to start host mode here - already started in LobbyFragment
-        Log.d(TAG, "Chat setup complete - isHost: ${args.isHost}, room: ${args.roomName}")
+        lifecycleScope.launch {
+            viewModel.connectionState.collect { state ->
+                Log.d(TAG, "Connection state: $state")
+                updateConnectionStatus(state)
+            }
+        }
     }
     
     private fun sendMessage() {
         val content = binding.messageInput.text?.toString()?.trim()
         if (content.isNullOrEmpty()) return
         
-        val message = Message(
-            id = UUID.randomUUID().toString(),
-            senderId = userId,
-            senderName = args.userName,
-            content = content,
-            timestamp = System.currentTimeMillis(),
-            isLocal = true
-        )
-        
-        messages.add(message)
-        messageAdapter.submitList(messages.toList())
-        binding.messagesRecyclerView.smoothScrollToPosition(messages.size - 1)
-        
-        Log.d(TAG, "Sending message: $content")
-        wifiAwareManager.sendMessage(userId, args.userName, content)
-        
+        viewModel.sendMessage(content)
         binding.messageInput.text?.clear()
+    }
+    
+    private fun updateRoomInfo() {
+        val (roomName, _, isHost) = viewModel.getRoomInfo()
+        binding.roomNameText.text = if (isHost) "Hosting: $roomName" else "Room: $roomName"
+    }
+    
+    private fun updateConnectionStatus(state: ChatRepository.ConnectionState) {
+        when (state) {
+            is ChatRepository.ConnectionState.Disconnected -> {
+                binding.connectionStatusText.text = "Disconnected"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.disconnected_color)
+            }
+            is ChatRepository.ConnectionState.Searching -> {
+                binding.connectionStatusText.text = "Searching..."
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.connecting_color)
+            }
+            is ChatRepository.ConnectionState.Hosting -> {
+                binding.connectionStatusText.text = "Hosting"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.hosting_color)
+            }
+            is ChatRepository.ConnectionState.Connected -> {
+                binding.connectionStatusText.text = "Connected"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.connected_color)
+            }
+            is ChatRepository.ConnectionState.Error -> {
+                binding.connectionStatusText.text = "Error: ${state.message}"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.disconnected_color)
+            }
+        }
     }
     
     override fun onDestroyView() {
         super.onDestroyView()
         Log.d(TAG, "onDestroyView")
-        // Don't stop WifiAwareManager here - it's shared across fragments
+        // Disconnect when leaving the chat screen
+        viewModel.disconnect()
         _binding = null
     }
 }
