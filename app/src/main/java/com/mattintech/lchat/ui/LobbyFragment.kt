@@ -11,8 +11,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.fragment.findNavController
 import com.mattintech.lchat.R
 import com.mattintech.lchat.databinding.FragmentLobbyBinding
-import com.mattintech.lchat.network.WifiAwareManager
-import com.mattintech.lchat.network.WifiAwareManagerSingleton
+import com.mattintech.lchat.viewmodel.LobbyEvent
+import com.mattintech.lchat.viewmodel.LobbyState
+import com.mattintech.lchat.viewmodel.LobbyViewModel
+import com.mattintech.lchat.viewmodel.ViewModelFactory
 import com.mattintech.lchat.utils.LOG_PREFIX
 
 class LobbyFragment : Fragment() {
@@ -24,7 +26,7 @@ class LobbyFragment : Fragment() {
     private var _binding: FragmentLobbyBinding? = null
     private val binding get() = _binding!!
     
-    private lateinit var wifiAwareManager: WifiAwareManager
+    private lateinit var viewModel: LobbyViewModel
     
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -40,10 +42,11 @@ class LobbyFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         Log.d(TAG, "onViewCreated")
         
-        Log.d(TAG, "Getting WifiAwareManager singleton")
-        wifiAwareManager = WifiAwareManagerSingleton.getInstance(requireContext())
+        val factory = ViewModelFactory(requireContext())
+        viewModel = ViewModelProvider(this, factory)[LobbyViewModel::class.java]
         
         setupUI()
+        observeViewModel()
     }
     
     private fun setupUI() {
@@ -64,53 +67,59 @@ class LobbyFragment : Fragment() {
         }
         
         binding.actionButton.setOnClickListener {
-            val userName = binding.nameInput.text?.toString()?.trim()
-            
-            if (userName.isNullOrEmpty()) {
-                Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            val userName = binding.nameInput.text?.toString()?.trim() ?: ""
             
             when (binding.modeRadioGroup.checkedRadioButtonId) {
                 R.id.hostRadio -> {
-                    val roomName = binding.roomInput.text?.toString()?.trim()
-                    if (roomName.isNullOrEmpty()) {
-                        Toast.makeText(context, "Please enter a room name", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    }
-                    startHostMode(roomName, userName)
+                    val roomName = binding.roomInput.text?.toString()?.trim() ?: ""
+                    viewModel.startHostMode(roomName, userName)
                 }
                 R.id.clientRadio -> {
-                    startClientMode(userName)
+                    viewModel.startClientMode(userName)
+                }
+            }
+        }
+    }
+    
+    private fun observeViewModel() {
+        viewModel.state.observe(viewLifecycleOwner) { state ->
+            when (state) {
+                is LobbyState.Idle -> {
+                    binding.noRoomsText.visibility = View.GONE
+                }
+                is LobbyState.Connecting -> {
+                    if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                        binding.noRoomsText.visibility = View.VISIBLE
+                        binding.noRoomsText.text = getString(R.string.connecting)
+                    }
+                }
+                is LobbyState.Connected -> {
+                    if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                        val userName = binding.nameInput.text?.toString()?.trim() ?: ""
+                        viewModel.onConnectedToRoom(state.roomName, userName)
+                    }
+                }
+                is LobbyState.Error -> {
+                    binding.noRoomsText.visibility = View.VISIBLE
+                    binding.noRoomsText.text = state.message
+                    Toast.makeText(context, state.message, Toast.LENGTH_LONG).show()
                 }
             }
         }
         
-        wifiAwareManager.setConnectionCallback { roomName, isConnected ->
-            Log.d(TAG, "Connection callback - room: $roomName, connected: $isConnected")
-            activity?.runOnUiThread {
-                if (isConnected && binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                    val userName = binding.nameInput.text?.toString()?.trim() ?: ""
-                    navigateToChat(roomName, userName, false)
-                } else if (!isConnected && binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                    binding.noRoomsText.text = "Failed to connect to $roomName. Ensure Wi-Fi is enabled on both devices."
-                    Toast.makeText(context, "Connection failed. Check Wi-Fi is enabled.", Toast.LENGTH_LONG).show()
+        viewModel.events.observe(viewLifecycleOwner) { event ->
+            when (event) {
+                is LobbyEvent.NavigateToChat -> {
+                    navigateToChat(event.roomName, event.userName, event.isHost)
+                    viewModel.clearEvent()
                 }
+                is LobbyEvent.ShowError -> {
+                    Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                    viewModel.clearEvent()
+                }
+                null -> {}
             }
         }
-    }
-    
-    private fun startHostMode(roomName: String, userName: String) {
-        Log.d(TAG, "Starting host mode - room: $roomName, user: $userName")
-        wifiAwareManager.startHostMode(roomName)
-        navigateToChat(roomName, userName, true)
-    }
-    
-    private fun startClientMode(userName: String) {
-        Log.d(TAG, "Starting client mode - user: $userName")
-        binding.noRoomsText.visibility = View.VISIBLE
-        binding.noRoomsText.text = getString(R.string.connecting)
-        wifiAwareManager.startClientMode()
     }
     
     private fun navigateToChat(roomName: String, userName: String, isHost: Boolean) {

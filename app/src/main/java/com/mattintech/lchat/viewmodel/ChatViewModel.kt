@@ -1,0 +1,89 @@
+package com.mattintech.lchat.viewmodel
+
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.mattintech.lchat.data.Message
+import com.mattintech.lchat.repository.ChatRepository
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+sealed class ChatState {
+    object Connected : ChatState()
+    object Disconnected : ChatState()
+    data class Error(val message: String) : ChatState()
+}
+
+class ChatViewModel(
+    private val chatRepository: ChatRepository
+) : ViewModel() {
+    
+    private val _state = MutableLiveData<ChatState>(ChatState.Connected)
+    val state: LiveData<ChatState> = _state
+    
+    val messages: StateFlow<List<Message>> = chatRepository.messages
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+    
+    val connectionState = chatRepository.connectionState
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = ChatRepository.ConnectionState.Disconnected
+        )
+    
+    val connectedUsers = chatRepository.connectedUsers
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+    
+    private var currentUserId: String = ""
+    private var currentUserName: String = ""
+    private var currentRoomName: String = ""
+    private var isHost: Boolean = false
+    
+    fun initialize(roomName: String, userName: String, isHost: Boolean) {
+        this.currentRoomName = roomName
+        this.currentUserName = userName
+        this.isHost = isHost
+        this.currentUserId = UUID.randomUUID().toString()
+        
+        // Setup message callback if needed for additional processing
+        chatRepository.setMessageCallback { userId, userName, content ->
+            // Can add additional message processing here if needed
+        }
+    }
+    
+    fun sendMessage(content: String) {
+        if (content.isBlank()) return
+        
+        viewModelScope.launch {
+            chatRepository.sendMessage(currentUserId, currentUserName, content)
+        }
+    }
+    
+    fun getRoomInfo(): Triple<String, String, Boolean> {
+        return Triple(currentRoomName, currentUserName, isHost)
+    }
+    
+    fun disconnect() {
+        viewModelScope.launch {
+            chatRepository.stop()
+            _state.value = ChatState.Disconnected
+        }
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        disconnect()
+    }
+}
