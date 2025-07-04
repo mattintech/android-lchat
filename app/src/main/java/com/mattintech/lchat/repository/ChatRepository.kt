@@ -2,25 +2,35 @@ package com.mattintech.lchat.repository
 
 import android.content.Context
 import com.mattintech.lchat.data.Message
+import com.mattintech.lchat.data.db.dao.MessageDao
+import com.mattintech.lchat.data.db.mappers.toEntity
+import com.mattintech.lchat.data.db.mappers.toMessage
 import com.mattintech.lchat.network.WifiAwareManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.*
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class ChatRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val wifiAwareManager: WifiAwareManager,
+    private val messageDao: MessageDao
 ) {
     
-    private val wifiAwareManager = WifiAwareManager(context)
+    private var currentRoomName: String = ""
     
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages.asStateFlow()
+    
+    // Flow that combines in-memory and database messages
+    fun getMessagesFlow(roomName: String): Flow<List<Message>> {
+        return messageDao.getMessagesForRoom(roomName)
+            .map { entities -> entities.map { it.toMessage() } }
+            .onStart { loadMessagesFromDatabase(roomName) }
+    }
     
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -69,9 +79,19 @@ class ChatRepository @Inject constructor(
     }
     
     fun startHostMode(roomName: String) {
+        currentRoomName = roomName
         wifiAwareManager.startHostMode(roomName)
         _connectionState.value = ConnectionState.Hosting(roomName)
         startConnectionMonitoring()
+        loadMessagesFromDatabase(roomName)
+    }
+    
+    private fun loadMessagesFromDatabase(roomName: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val storedMessages = messageDao.getMessagesForRoomOnce(roomName)
+                .map { it.toMessage() }
+            _messages.value = storedMessages
+        }
     }
     
     fun startClientMode() {
@@ -104,6 +124,11 @@ class ChatRepository @Inject constructor(
     
     private fun addMessage(message: Message) {
         _messages.value = _messages.value + message
+        
+        // Save to database
+        CoroutineScope(Dispatchers.IO).launch {
+            messageDao.insertMessage(message.toEntity(currentRoomName))
+        }
     }
     
     fun clearMessages() {
@@ -118,7 +143,9 @@ class ChatRepository @Inject constructor(
         connectionCallback = callback
         wifiAwareManager.setConnectionCallback { roomName, isConnected ->
             if (isConnected) {
+                currentRoomName = roomName
                 _connectionState.value = ConnectionState.Connected(roomName)
+                loadMessagesFromDatabase(roomName)
             } else {
                 _connectionState.value = ConnectionState.Disconnected
             }
