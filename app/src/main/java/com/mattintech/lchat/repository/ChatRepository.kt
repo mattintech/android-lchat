@@ -72,14 +72,7 @@ class ChatRepository @Inject constructor(
                 )
                 addMessage(message)
                 
-                // If we're receiving messages, we must be connected
-                if (_connectionState.value !is ConnectionState.Connected && 
-                    _connectionState.value !is ConnectionState.Hosting) {
-                    when (_connectionState.value) {
-                        is ConnectionState.Hosting -> {} // Keep hosting state
-                        else -> _connectionState.value = ConnectionState.Connected("Active")
-                    }
-                }
+                // Don't change connection state based on messages - let WifiAwareManager handle it
                 }
             } catch (e: Exception) {
                 android.util.Log.e("ChatRepository", "Error collecting message flow", e)
@@ -90,12 +83,20 @@ class ChatRepository @Inject constructor(
         repositoryScope.launch {
             try {
                 wifiAwareManager.connectionFlow.collect { (roomName, isConnected) ->
+                    android.util.Log.d("ChatRepository", "Connection flow update - room: $roomName, connected: $isConnected, current state: ${_connectionState.value}")
+                    
                     if (isConnected) {
                         currentRoomName = roomName
-                        _connectionState.value = ConnectionState.Connected(roomName)
+                        // Only change to connected if we're not already hosting
+                        if (_connectionState.value !is ConnectionState.Hosting) {
+                            _connectionState.value = ConnectionState.Connected(roomName)
+                        }
                         loadMessagesFromDatabase(roomName)
                     } else {
-                        _connectionState.value = ConnectionState.Disconnected
+                        // Only disconnect if the room matches our current room
+                        if (roomName.isEmpty() || roomName == currentRoomName) {
+                            _connectionState.value = ConnectionState.Disconnected
+                        }
                     }
                     // Call the legacy callback if set
                     connectionCallback?.invoke(roomName, isConnected)

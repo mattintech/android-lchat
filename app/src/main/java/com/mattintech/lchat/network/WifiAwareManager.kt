@@ -38,6 +38,8 @@ class WifiAwareManager(private val context: Context) {
     private var subscribeDiscoverySession: SubscribeDiscoverySession? = null
     
     private val peerHandles = ConcurrentHashMap<String, PeerHandle>()
+    private val peerRoomMapping = ConcurrentHashMap<String, String>() // PeerHandle.toString() -> roomName
+    private var currentRoom: String? = null
     
     // Replace callbacks with Flows
     private val _messageFlow = MutableSharedFlow<Triple<String, String, String>>()
@@ -111,6 +113,7 @@ class WifiAwareManager(private val context: Context) {
     }
     
     fun startHostMode(roomName: String) {
+        currentRoom = roomName
         val config = PublishConfig.Builder()
             .setServiceName(SERVICE_NAME)
             .setServiceSpecificInfo(roomName.toByteArray())
@@ -196,6 +199,7 @@ class WifiAwareManager(private val context: Context) {
                 
                 // Store peer handle for this room
                 peerHandles[roomName] = peerHandle
+                currentRoom = roomName
                 
                 // Send connection request to host
                 Log.d(TAG, "Sending connection request to room: $roomName")
@@ -203,7 +207,8 @@ class WifiAwareManager(private val context: Context) {
                 
                 // Update peer activity when discovered
                 val peerId = peerHandle.toString()
-                lastPeerActivity[peerId] = System.currentTimeMillis()
+                peerRoomMapping[peerId] = roomName
+                lastPeerActivity[roomName] = System.currentTimeMillis()
                 
                 // Wait a bit for host to prepare, then connect
                 coroutineScope.launch {
@@ -288,8 +293,19 @@ class WifiAwareManager(private val context: Context) {
                     
                     override fun onLost(network: android.net.Network) {
                         Log.d(TAG, "onLost: Network lost for room: $roomName")
-                        // Clear peer handles when connection is lost
+                        // Check if we still have active keep-alive for this room
+                        val lastActivity = lastPeerActivity[roomName]
+                        val currentTime = System.currentTimeMillis()
+                        
+                        if (lastActivity != null && (currentTime - lastActivity) < KEEP_ALIVE_TIMEOUT_MS) {
+                            Log.d(TAG, "Network lost but keep-alive still active for room: $roomName - ignoring disconnect")
+                            // Don't disconnect if keep-alive is still active
+                            return
+                        }
+                        
+                        // Clear peer handles when connection is truly lost
                         peerHandles.remove(roomName)
+                        lastPeerActivity.remove(roomName)
                         coroutineScope.launch {
                             _connectionFlow.emit(Pair(roomName, false))
                         }
@@ -358,8 +374,10 @@ class WifiAwareManager(private val context: Context) {
                     override fun onAvailable(network: android.net.Network) {
                         Log.d(TAG, "Client connected")
                         val peerId = peerHandle.toString()
-                        peerHandles[peerId] = peerHandle
-                        lastPeerActivity[peerId] = System.currentTimeMillis()
+                        val roomName = currentRoom ?: "host"
+                        peerHandles[roomName] = peerHandle
+                        peerRoomMapping[peerId] = roomName
+                        lastPeerActivity[roomName] = System.currentTimeMillis()
                         if (!isResumed) {
                             isResumed = true
                             continuation.resume(Result.success(Unit))
@@ -391,7 +409,11 @@ class WifiAwareManager(private val context: Context) {
         try {
             // Update peer activity on any message
             val peerId = peerHandle.toString()
-            lastPeerActivity[peerId] = System.currentTimeMillis()
+            val roomName = peerRoomMapping[peerId] ?: currentRoom
+            
+            if (roomName != null) {
+                lastPeerActivity[roomName] = System.currentTimeMillis()
+            }
             
             val messageStr = String(message)
             val parts = messageStr.split("|", limit = 3)
@@ -468,23 +490,23 @@ class WifiAwareManager(private val context: Context) {
         var messagesSent = 0
         
         if (publishDiscoverySession != null && peerHandles.isNotEmpty()) {
-            peerHandles.forEach { (peerId, peerHandle) ->
+            peerHandles.forEach { (roomName, peerHandle) ->
                 try {
                     publishDiscoverySession?.sendMessage(peerHandle, messagesSent, message)
                     messagesSent++
-                    Log.d(TAG, "Sent keep-alive to peer: $peerId")
+                    Log.d(TAG, "Sent keep-alive to room: $roomName")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send keep-alive to peer: $peerId", e)
+                    Log.e(TAG, "Failed to send keep-alive to room: $roomName", e)
                 }
             }
         } else if (subscribeDiscoverySession != null && peerHandles.isNotEmpty()) {
-            peerHandles.forEach { (peerId, peerHandle) ->
+            peerHandles.forEach { (roomName, peerHandle) ->
                 try {
                     subscribeDiscoverySession?.sendMessage(peerHandle, messagesSent, message)
                     messagesSent++
-                    Log.d(TAG, "Sent keep-alive to peer: $peerId")
+                    Log.d(TAG, "Sent keep-alive to room: $roomName")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send keep-alive to peer: $peerId", e)
+                    Log.e(TAG, "Failed to send keep-alive to room: $roomName", e)
                 }
             }
         }
@@ -493,7 +515,12 @@ class WifiAwareManager(private val context: Context) {
     private fun handleKeepAlive(peerHandle: PeerHandle, shouldReply: Boolean) {
         // Update last activity for this peer
         val peerId = peerHandle.toString()
-        lastPeerActivity[peerId] = System.currentTimeMillis()
+        val roomName = peerRoomMapping[peerId] ?: currentRoom
+        
+        if (roomName != null) {
+            lastPeerActivity[roomName] = System.currentTimeMillis()
+            Log.d(TAG, "Updated keep-alive activity for room: $roomName")
+        }
         
         // Send acknowledgment if requested
         if (shouldReply) {
@@ -513,25 +540,26 @@ class WifiAwareManager(private val context: Context) {
     
     private fun checkPeerActivity() {
         val currentTime = System.currentTimeMillis()
-        val inactivePeers = mutableListOf<String>()
+        val inactiveRooms = mutableListOf<String>()
         
-        lastPeerActivity.forEach { (peerId, lastActivity) ->
+        lastPeerActivity.forEach { (roomName, lastActivity) ->
             if (currentTime - lastActivity > KEEP_ALIVE_TIMEOUT_MS) {
-                Log.w(TAG, "Peer $peerId inactive for too long, considering disconnected")
-                inactivePeers.add(peerId)
+                Log.w(TAG, "Room $roomName inactive for too long, considering disconnected")
+                inactiveRooms.add(roomName)
             }
         }
         
-        // Remove inactive peers
-        inactivePeers.forEach { peerId ->
-            lastPeerActivity.remove(peerId)
-            peerHandles.remove(peerId)
-        }
-        
-        // If all peers are disconnected, emit disconnection event
-        if (peerHandles.isEmpty() && lastPeerActivity.isNotEmpty()) {
+        // Remove inactive rooms
+        inactiveRooms.forEach { roomName ->
+            lastPeerActivity.remove(roomName)
+            peerHandles.remove(roomName)
+            
+            // Clean up peer room mapping
+            peerRoomMapping.entries.removeIf { it.value == roomName }
+            
+            // Emit disconnection event for this room
             coroutineScope.launch {
-                _connectionFlow.emit(Pair("", false))
+                _connectionFlow.emit(Pair(roomName, false))
             }
         }
     }
@@ -547,6 +575,8 @@ class WifiAwareManager(private val context: Context) {
         wifiAwareSession?.close()
         wifiAwareSession = null
         peerHandles.clear()
+        peerRoomMapping.clear()
+        currentRoom = null
         // Don't cancel the coroutine scope - we need it for future operations
         Log.d(TAG, "WifiAwareManager stopped - session cleared for fresh start")
     }
