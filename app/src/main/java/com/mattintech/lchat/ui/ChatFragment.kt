@@ -9,8 +9,11 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.navArgs
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.mattintech.lchat.R
 import com.mattintech.lchat.databinding.FragmentChatBinding
+import com.mattintech.lchat.repository.ChatRepository
 import com.mattintech.lchat.ui.adapters.MessageAdapter
 import com.mattintech.lchat.utils.LOG_PREFIX
 import com.mattintech.lchat.viewmodel.ChatViewModel
@@ -50,6 +53,7 @@ class ChatFragment : Fragment() {
         
         setupUI()
         observeViewModel()
+        updateRoomInfo()
     }
     
     private fun setupUI() {
@@ -84,7 +88,7 @@ class ChatFragment : Fragment() {
         lifecycleScope.launch {
             viewModel.connectionState.collect { state ->
                 Log.d(TAG, "Connection state: $state")
-                // Handle connection state changes if needed
+                updateConnectionStatus(state)
             }
         }
     }
@@ -95,6 +99,41 @@ class ChatFragment : Fragment() {
         
         viewModel.sendMessage(content)
         binding.messageInput.text?.clear()
+    }
+    
+    private fun updateRoomInfo() {
+        val (roomName, _, isHost) = viewModel.getRoomInfo()
+        binding.roomNameText.text = if (isHost) "Hosting: $roomName" else "Room: $roomName"
+    }
+    
+    private fun updateConnectionStatus(state: ChatRepository.ConnectionState) {
+        when (state) {
+            is ChatRepository.ConnectionState.Disconnected -> {
+                binding.connectionStatusText.text = "Disconnected"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.disconnected_color)
+            }
+            is ChatRepository.ConnectionState.Searching -> {
+                binding.connectionStatusText.text = "Searching..."
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.connecting_color)
+            }
+            is ChatRepository.ConnectionState.Hosting -> {
+                binding.connectionStatusText.text = "Hosting"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.hosting_color)
+            }
+            is ChatRepository.ConnectionState.Connected -> {
+                binding.connectionStatusText.text = "Connected"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.connected_color)
+            }
+            is ChatRepository.ConnectionState.Error -> {
+                binding.connectionStatusText.text = "Error: ${state.message}"
+                binding.connectionIndicator.backgroundTintList = 
+                    ContextCompat.getColorStateList(requireContext(), R.color.disconnected_color)
+            }
+        }
     }
     
     override fun onDestroyView() {

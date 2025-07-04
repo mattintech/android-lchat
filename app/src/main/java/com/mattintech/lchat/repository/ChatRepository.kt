@@ -3,6 +3,7 @@ package com.mattintech.lchat.repository
 import android.content.Context
 import com.mattintech.lchat.data.Message
 import com.mattintech.lchat.network.WifiAwareManager
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,6 +36,10 @@ class ChatRepository private constructor(context: Context) {
     private var messageCallback: ((String, String, String) -> Unit)? = null
     private var connectionCallback: ((String, Boolean) -> Unit)? = null
     
+    private var lastActivityTime = System.currentTimeMillis()
+    private var connectionCheckJob: Job? = null
+    private val connectionTimeout = 30000L // 30 seconds
+    
     init {
         wifiAwareManager.initialize()
         setupWifiAwareCallbacks()
@@ -51,6 +56,19 @@ class ChatRepository private constructor(context: Context) {
                 isOwnMessage = false
             )
             addMessage(message)
+            
+            // Update last activity time
+            lastActivityTime = System.currentTimeMillis()
+            
+            // If we're receiving messages, we must be connected
+            if (_connectionState.value !is ConnectionState.Connected && 
+                _connectionState.value !is ConnectionState.Hosting) {
+                when (_connectionState.value) {
+                    is ConnectionState.Hosting -> {} // Keep hosting state
+                    else -> _connectionState.value = ConnectionState.Connected("Active")
+                }
+            }
+            
             messageCallback?.invoke(userId, userName, content)
         }
     }
@@ -58,11 +76,13 @@ class ChatRepository private constructor(context: Context) {
     fun startHostMode(roomName: String) {
         wifiAwareManager.startHostMode(roomName)
         _connectionState.value = ConnectionState.Hosting(roomName)
+        startConnectionMonitoring()
     }
     
     fun startClientMode() {
         wifiAwareManager.startClientMode()
         _connectionState.value = ConnectionState.Searching
+        startConnectionMonitoring()
     }
     
     fun sendMessage(userId: String, userName: String, content: String) {
@@ -76,6 +96,15 @@ class ChatRepository private constructor(context: Context) {
         )
         addMessage(message)
         wifiAwareManager.sendMessage(userId, userName, content)
+        
+        // Update last activity time
+        lastActivityTime = System.currentTimeMillis()
+        
+        // If we can send messages, update connection state if needed
+        if (_connectionState.value is ConnectionState.Disconnected || 
+            _connectionState.value is ConnectionState.Error) {
+            _connectionState.value = ConnectionState.Connected("Active")
+        }
     }
     
     private fun addMessage(message: Message) {
@@ -92,13 +121,47 @@ class ChatRepository private constructor(context: Context) {
     
     fun setConnectionCallback(callback: (String, Boolean) -> Unit) {
         connectionCallback = callback
-        wifiAwareManager.setConnectionCallback(callback)
+        wifiAwareManager.setConnectionCallback { roomName, isConnected ->
+            if (isConnected) {
+                _connectionState.value = ConnectionState.Connected(roomName)
+            } else {
+                _connectionState.value = ConnectionState.Disconnected
+            }
+            callback(roomName, isConnected)
+        }
     }
     
     fun stop() {
+        stopConnectionMonitoring()
         wifiAwareManager.stop()
         _connectionState.value = ConnectionState.Disconnected
         _connectedUsers.value = emptyList()
+    }
+    
+    private fun startConnectionMonitoring() {
+        connectionCheckJob?.cancel()
+        connectionCheckJob = GlobalScope.launch {
+            while (isActive) {
+                delay(5000) // Check every 5 seconds
+                val timeSinceLastActivity = System.currentTimeMillis() - lastActivityTime
+                
+                // If no activity for 30 seconds and we think we're connected, mark as disconnected
+                if (timeSinceLastActivity > connectionTimeout) {
+                    when (_connectionState.value) {
+                        is ConnectionState.Connected,
+                        is ConnectionState.Hosting -> {
+                            _connectionState.value = ConnectionState.Disconnected
+                        }
+                        else -> {} // Keep current state
+                    }
+                }
+            }
+        }
+    }
+    
+    private fun stopConnectionMonitoring() {
+        connectionCheckJob?.cancel()
+        connectionCheckJob = null
     }
     
     sealed class ConnectionState {
