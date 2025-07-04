@@ -9,7 +9,13 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import com.mattintech.lchat.utils.LOG_PREFIX
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 @RequiresApi(Build.VERSION_CODES.O)
 class WifiAwareManager(private val context: Context) {
@@ -26,27 +32,57 @@ class WifiAwareManager(private val context: Context) {
     private var subscribeDiscoverySession: SubscribeDiscoverySession? = null
     
     private val peerHandles = ConcurrentHashMap<String, PeerHandle>()
+    
+    // Replace callbacks with Flows
+    private val _messageFlow = MutableSharedFlow<Triple<String, String, String>>()
+    val messageFlow: SharedFlow<Triple<String, String, String>> = _messageFlow.asSharedFlow()
+    
+    private val _connectionFlow = MutableSharedFlow<Pair<String, Boolean>>()
+    val connectionFlow: SharedFlow<Pair<String, Boolean>> = _connectionFlow.asSharedFlow()
+    
+    // Keep legacy callbacks for backward compatibility
     private var messageCallback: ((String, String, String) -> Unit)? = null
     private var connectionCallback: ((String, Boolean) -> Unit)? = null
     
-    private val attachCallback = object : AttachCallback() {
-        override fun onAttached(session: WifiAwareSession) {
-            Log.d(TAG, "Wi-Fi Aware attached")
-            wifiAwareSession = session
-        }
-        
-        override fun onAttachFailed() {
-            Log.e(TAG, "Wi-Fi Aware attach failed")
+    // Exception handler for coroutine errors
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Coroutine exception: ", throwable)
+    }
+    
+    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
+    
+    fun initialize() {
+        coroutineScope.launch {
+            initializeAsync()
         }
     }
     
-    fun initialize() {
+    suspend fun initializeAsync(): Result<Unit> = withContext(Dispatchers.IO) {
         wifiAwareManager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? android.net.wifi.aware.WifiAwareManager
         
         if (wifiAwareManager?.isAvailable == true) {
-            wifiAwareManager?.attach(attachCallback, null)
+            attachToWifiAware()
         } else {
-            Log.e(TAG, "Wi-Fi Aware is not available")
+            Result.failure(Exception("Wi-Fi Aware is not available"))
+        }
+    }
+    
+    private suspend fun attachToWifiAware(): Result<Unit> = suspendCancellableCoroutine { continuation ->
+        wifiAwareManager?.attach(object : AttachCallback() {
+            override fun onAttached(session: WifiAwareSession) {
+                Log.d(TAG, "Wi-Fi Aware attached")
+                wifiAwareSession = session
+                continuation.resume(Result.success(Unit))
+            }
+            
+            override fun onAttachFailed() {
+                Log.e(TAG, "Wi-Fi Aware attach failed")
+                continuation.resume(Result.failure(Exception("Wi-Fi Aware attach failed")))
+            }
+        }, null)
+        
+        continuation.invokeOnCancellation {
+            Log.d(TAG, "Wi-Fi Aware attach cancelled")
         }
     }
     
@@ -67,8 +103,15 @@ class WifiAwareManager(private val context: Context) {
                 Log.d(TAG, "Host: Received message: $messageStr")
                 
                 if (messageStr == "CONNECT_REQUEST") {
-                    Log.d(TAG, "Host: Received connection request")
-                    acceptConnection(peerHandle)
+                    Log.d(TAG, "Host: Received connection request from peer")
+                    coroutineScope.launch {
+                        val result = acceptConnectionAsync(peerHandle)
+                        if (result.isSuccess) {
+                            Log.d(TAG, "Host: Successfully accepted connection")
+                        } else {
+                            Log.e(TAG, "Host: Failed to accept connection: ${result.exceptionOrNull()?.message}")
+                        }
+                    }
                 } else {
                     handleIncomingMessage(peerHandle, message)
                 }
@@ -103,9 +146,13 @@ class WifiAwareManager(private val context: Context) {
                 subscribeDiscoverySession?.sendMessage(peerHandle, 0, "CONNECT_REQUEST".toByteArray())
                 
                 // Wait a bit for host to prepare, then connect
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    connectToPeer(peerHandle, roomName)
-                }, 500)
+                coroutineScope.launch {
+                    delay(500)
+                    val result = connectToPeerAsync(peerHandle, roomName)
+                    if (result.isFailure) {
+                        Log.e(TAG, "Failed to connect to peer: ${result.exceptionOrNull()?.message}")
+                    }
+                }
             }
             
             override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
@@ -115,6 +162,13 @@ class WifiAwareManager(private val context: Context) {
     }
     
     private fun connectToPeer(peerHandle: PeerHandle, roomName: String) {
+        coroutineScope.launch {
+            connectToPeerAsync(peerHandle, roomName)
+        }
+    }
+    
+    private suspend fun connectToPeerAsync(peerHandle: PeerHandle, roomName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { continuation ->
         Log.d(TAG, "connectToPeer: Starting connection to room: $roomName")
         val networkSpecifier = WifiAwareNetworkSpecifier.Builder(subscribeDiscoverySession!!, peerHandle)
             .setPskPassphrase("lchat-secure-key")
@@ -129,62 +183,117 @@ class WifiAwareManager(private val context: Context) {
             
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         
-        try {
-            connectivityManager.requestNetwork(networkRequest, object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: android.net.Network) {
-                    Log.d(TAG, "onAvailable: Network connected for room: $roomName")
-                    connectionCallback?.invoke(roomName, true)
+            try {
+                var isResumed = false
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        Log.d(TAG, "onAvailable: Network connected for room: $roomName")
+                        if (!isResumed) {
+                            isResumed = true
+                            continuation.resume(Result.success(Unit))
+                        }
+                        // Emit to flow and legacy callback
+                        coroutineScope.launch {
+                            _connectionFlow.emit(Pair(roomName, true))
+                        }
+                        connectionCallback?.invoke(roomName, true)
+                    }
+                    
+                    override fun onLost(network: android.net.Network) {
+                        Log.d(TAG, "onLost: Network lost for room: $roomName")
+                        coroutineScope.launch {
+                            _connectionFlow.emit(Pair(roomName, false))
+                        }
+                        connectionCallback?.invoke(roomName, false)
+                    }
+                    
+                    override fun onUnavailable() {
+                        Log.e(TAG, "onUnavailable: Network request failed for room: $roomName")
+                        if (!isResumed) {
+                            isResumed = true
+                            continuation.resume(Result.failure(Exception("Network unavailable for room: $roomName")))
+                        }
+                        coroutineScope.launch {
+                            _connectionFlow.emit(Pair(roomName, false))
+                        }
+                        connectionCallback?.invoke(roomName, false)
+                    }
+                    
+                    override fun onCapabilitiesChanged(network: android.net.Network, networkCapabilities: NetworkCapabilities) {
+                        Log.d(TAG, "onCapabilitiesChanged: Capabilities changed for room: $roomName")
+                    }
+                    
+                    override fun onLinkPropertiesChanged(network: android.net.Network, linkProperties: android.net.LinkProperties) {
+                        Log.d(TAG, "onLinkPropertiesChanged: Link properties changed for room: $roomName")
+                    }
                 }
                 
-                override fun onLost(network: android.net.Network) {
-                    Log.d(TAG, "onLost: Network lost for room: $roomName")
-                    connectionCallback?.invoke(roomName, false)
-                }
+                connectivityManager.requestNetwork(networkRequest, callback, android.os.Handler(android.os.Looper.getMainLooper()))
                 
-                override fun onUnavailable() {
-                    Log.e(TAG, "onUnavailable: Network request failed for room: $roomName")
-                    connectionCallback?.invoke(roomName, false)
-                }
+                Log.d(TAG, "connectToPeer: Network request submitted for room: $roomName")
                 
-                override fun onCapabilitiesChanged(network: android.net.Network, networkCapabilities: NetworkCapabilities) {
-                    Log.d(TAG, "onCapabilitiesChanged: Capabilities changed for room: $roomName")
+                continuation.invokeOnCancellation {
+                    connectivityManager.unregisterNetworkCallback(callback)
                 }
-                
-                override fun onLinkPropertiesChanged(network: android.net.Network, linkProperties: android.net.LinkProperties) {
-                    Log.d(TAG, "onLinkPropertiesChanged: Link properties changed for room: $roomName")
+            } catch (e: Exception) {
+                Log.e(TAG, "connectToPeer: Failed to request network", e)
+                continuation.resume(Result.failure(e))
+                coroutineScope.launch {
+                    _connectionFlow.emit(Pair(roomName, false))
                 }
-            }, android.os.Handler(android.os.Looper.getMainLooper()), 30000) // 30 second timeout
-            
-            Log.d(TAG, "connectToPeer: Network request submitted for room: $roomName")
-        } catch (e: Exception) {
-            Log.e(TAG, "connectToPeer: Failed to request network", e)
-            connectionCallback?.invoke(roomName, false)
+                connectionCallback?.invoke(roomName, false)
+            }
         }
     }
     
-    private fun acceptConnection(peerHandle: PeerHandle) {
-        Log.d(TAG, "acceptConnection: Accepting connection from client")
-        val networkSpecifier = WifiAwareNetworkSpecifier.Builder(publishDiscoverySession!!, peerHandle)
-            .setPskPassphrase("lchat-secure-key")
-            .setPort(PORT)
-            .build()
+    
+    private suspend fun acceptConnectionAsync(peerHandle: PeerHandle): Result<Unit> = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { continuation ->
+            Log.d(TAG, "acceptConnection: Accepting connection from client")
             
-        val networkRequest = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
-            .setNetworkSpecifier(networkSpecifier)
-            .build()
-            
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        connectivityManager.requestNetwork(networkRequest, object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                Log.d(TAG, "Client connected")
-                peerHandles[peerHandle.toString()] = peerHandle
+            try {
+                val networkSpecifier = WifiAwareNetworkSpecifier.Builder(publishDiscoverySession!!, peerHandle)
+                    .setPskPassphrase("lchat-secure-key")
+                    .setPort(PORT)
+                    .build()
+                
+                val networkRequest = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
+                    .setNetworkSpecifier(networkSpecifier)
+                    .build()
+                
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                var isResumed = false
+                
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        Log.d(TAG, "Client connected")
+                        peerHandles[peerHandle.toString()] = peerHandle
+                        if (!isResumed) {
+                            isResumed = true
+                            continuation.resume(Result.success(Unit))
+                        }
+                    }
+                    
+                    override fun onUnavailable() {
+                        Log.e(TAG, "Failed to accept client connection - Check if Wi-Fi is enabled")
+                        if (!isResumed) {
+                            isResumed = true
+                            continuation.resume(Result.failure(Exception("Failed to accept client connection")))
+                        }
+                    }
+                }
+                
+                connectivityManager.requestNetwork(networkRequest, callback)
+                
+                continuation.invokeOnCancellation {
+                    connectivityManager.unregisterNetworkCallback(callback)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "acceptConnection: Failed to accept connection", e)
+                continuation.resume(Result.failure(e))
             }
-            
-            override fun onUnavailable() {
-                Log.e(TAG, "Failed to accept client connection - Check if Wi-Fi is enabled")
-            }
-        })
+        }
     }
     
     private fun handleIncomingMessage(peerHandle: PeerHandle, message: ByteArray) {
@@ -192,6 +301,10 @@ class WifiAwareManager(private val context: Context) {
             val messageStr = String(message)
             val parts = messageStr.split("|", limit = 3)
             if (parts.size == 3) {
+                // Emit to flow and legacy callback
+                coroutineScope.launch {
+                    _messageFlow.emit(Triple(parts[0], parts[1], parts[2]))
+                }
                 messageCallback?.invoke(parts[0], parts[1], parts[2])
             }
         } catch (e: Exception) {
@@ -226,5 +339,6 @@ class WifiAwareManager(private val context: Context) {
         subscribeDiscoverySession?.close()
         wifiAwareSession?.close()
         peerHandles.clear()
+        coroutineScope.cancel()
     }
 }

@@ -1,12 +1,16 @@
 package com.mattintech.lchat.viewmodel
 
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mattintech.lchat.repository.ChatRepository
 import com.mattintech.lchat.utils.PreferencesManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -32,14 +36,14 @@ class LobbyViewModel @Inject constructor(
     private val preferencesManager: PreferencesManager
 ) : ViewModel() {
     
-    private val _state = MutableLiveData<LobbyState>(LobbyState.Idle)
-    val state: LiveData<LobbyState> = _state
+    private val _state = MutableStateFlow<LobbyState>(LobbyState.Idle)
+    val state: StateFlow<LobbyState> = _state.asStateFlow()
     
-    private val _events = MutableLiveData<LobbyEvent?>()
-    val events: LiveData<LobbyEvent?> = _events
+    private val _events = MutableSharedFlow<LobbyEvent>()
+    val events: SharedFlow<LobbyEvent> = _events.asSharedFlow()
     
-    private val _savedUserName = MutableLiveData<String?>()
-    val savedUserName: LiveData<String?> = _savedUserName
+    private val _savedUserName = MutableStateFlow<String?>(null)
+    val savedUserName: StateFlow<String?> = _savedUserName.asStateFlow()
     
     init {
         setupConnectionCallback()
@@ -64,12 +68,16 @@ class LobbyViewModel @Inject constructor(
     
     fun startHostMode(roomName: String, userName: String) {
         if (roomName.isBlank()) {
-            _events.value = LobbyEvent.ShowError("Please enter a room name")
+            viewModelScope.launch {
+                _events.emit(LobbyEvent.ShowError("Please enter a room name"))
+            }
             return
         }
         
         if (userName.isBlank()) {
-            _events.value = LobbyEvent.ShowError("Please enter your name")
+            viewModelScope.launch {
+                _events.emit(LobbyEvent.ShowError("Please enter your name"))
+            }
             return
         }
         
@@ -77,13 +85,15 @@ class LobbyViewModel @Inject constructor(
             _state.value = LobbyState.Connecting
             preferencesManager.saveUserName(userName)
             chatRepository.startHostMode(roomName)
-            _events.value = LobbyEvent.NavigateToChat(roomName, userName, true)
+            _events.emit(LobbyEvent.NavigateToChat(roomName, userName, true))
         }
     }
     
     fun startClientMode(userName: String) {
         if (userName.isBlank()) {
-            _events.value = LobbyEvent.ShowError("Please enter your name")
+            viewModelScope.launch {
+                _events.emit(LobbyEvent.ShowError("Please enter your name"))
+            }
             return
         }
         
@@ -96,11 +106,13 @@ class LobbyViewModel @Inject constructor(
     
     fun onConnectedToRoom(roomName: String, userName: String) {
         preferencesManager.saveUserName(userName)
-        _events.value = LobbyEvent.NavigateToChat(roomName, userName, false)
+        viewModelScope.launch {
+            _events.emit(LobbyEvent.NavigateToChat(roomName, userName, false))
+        }
     }
     
     fun clearEvent() {
-        _events.value = null
+        // SharedFlow doesn't need clearing, events are consumed once
     }
     
     fun saveUserName(name: String) {

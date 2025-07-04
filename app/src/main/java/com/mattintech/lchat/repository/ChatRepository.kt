@@ -19,6 +19,14 @@ class ChatRepository @Inject constructor(
     private val wifiAwareManager: WifiAwareManager,
     private val messageDao: MessageDao
 ) {
+    // Exception handler for repository operations
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        android.util.Log.e("ChatRepository", "Repository coroutine exception: ", throwable)
+        _connectionState.value = ConnectionState.Error(throwable.message ?: "Unknown error")
+    }
+    
+    // Repository scope for background operations
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
     
     private var currentRoomName: String = ""
     
@@ -47,36 +55,64 @@ class ChatRepository @Inject constructor(
     
     init {
         wifiAwareManager.initialize()
-        setupWifiAwareCallbacks()
+        // Only use Flow-based collection, not callbacks
+        collectWifiAwareFlows()
     }
     
-    private fun setupWifiAwareCallbacks() {
-        wifiAwareManager.setMessageCallback { userId, userName, content ->
-            val message = Message(
-                id = UUID.randomUUID().toString(),
-                userId = userId,
-                userName = userName,
-                content = content,
-                timestamp = System.currentTimeMillis(),
-                isOwnMessage = false
-            )
-            addMessage(message)
-            
-            // Update last activity time
-            lastActivityTime = System.currentTimeMillis()
-            
-            // If we're receiving messages, we must be connected
-            if (_connectionState.value !is ConnectionState.Connected && 
-                _connectionState.value !is ConnectionState.Hosting) {
-                when (_connectionState.value) {
-                    is ConnectionState.Hosting -> {} // Keep hosting state
-                    else -> _connectionState.value = ConnectionState.Connected("Active")
+    private fun collectWifiAwareFlows() {
+        // Collect messages from Flow
+        repositoryScope.launch {
+            try {
+                wifiAwareManager.messageFlow.collect { (userId, userName, content) ->
+                val message = Message(
+                    id = UUID.randomUUID().toString(),
+                    userId = userId,
+                    userName = userName,
+                    content = content,
+                    timestamp = System.currentTimeMillis(),
+                    isOwnMessage = false
+                )
+                addMessage(message)
+                
+                // Update last activity time
+                lastActivityTime = System.currentTimeMillis()
+                
+                // If we're receiving messages, we must be connected
+                if (_connectionState.value !is ConnectionState.Connected && 
+                    _connectionState.value !is ConnectionState.Hosting) {
+                    when (_connectionState.value) {
+                        is ConnectionState.Hosting -> {} // Keep hosting state
+                        else -> _connectionState.value = ConnectionState.Connected("Active")
+                    }
                 }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Error collecting message flow", e)
             }
-            
-            messageCallback?.invoke(userId, userName, content)
+        }
+        
+        // Collect connection state from Flow
+        repositoryScope.launch {
+            try {
+                wifiAwareManager.connectionFlow.collect { (roomName, isConnected) ->
+                    if (isConnected) {
+                        currentRoomName = roomName
+                        _connectionState.value = ConnectionState.Connected(roomName)
+                        loadMessagesFromDatabase(roomName)
+                    } else {
+                        _connectionState.value = ConnectionState.Disconnected
+                    }
+                    // Call the legacy callback if set
+                    connectionCallback?.invoke(roomName, isConnected)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Error collecting connection flow", e)
+                _connectionState.value = ConnectionState.Error(e.message ?: "Connection error")
+            }
         }
     }
+    
+    // Removed setupWifiAwareCallbacks - now using Flow-based collection only
     
     fun startHostMode(roomName: String) {
         currentRoomName = roomName
@@ -87,10 +123,16 @@ class ChatRepository @Inject constructor(
     }
     
     private fun loadMessagesFromDatabase(roomName: String) {
-        CoroutineScope(Dispatchers.IO).launch {
-            val storedMessages = messageDao.getMessagesForRoomOnce(roomName)
-                .map { it.toMessage() }
-            _messages.value = storedMessages
+        repositoryScope.launch {
+            try {
+                val storedMessages = messageDao.getMessagesForRoomOnce(roomName)
+                    .map { it.toMessage() }
+                _messages.value = storedMessages
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Error loading messages from database", e)
+                // Don't crash, just continue with empty messages
+                _messages.value = emptyList()
+            }
         }
     }
     
@@ -123,11 +165,17 @@ class ChatRepository @Inject constructor(
     }
     
     private fun addMessage(message: Message) {
-        _messages.value = _messages.value + message
+        // Add message and sort by timestamp to ensure proper order
+        _messages.value = (_messages.value + message).sortedBy { it.timestamp }
         
         // Save to database
-        CoroutineScope(Dispatchers.IO).launch {
-            messageDao.insertMessage(message.toEntity(currentRoomName))
+        repositoryScope.launch {
+            try {
+                messageDao.insertMessage(message.toEntity(currentRoomName))
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Error saving message to database", e)
+                // Don't crash, message is already in memory
+            }
         }
     }
     
@@ -141,16 +189,7 @@ class ChatRepository @Inject constructor(
     
     fun setConnectionCallback(callback: (String, Boolean) -> Unit) {
         connectionCallback = callback
-        wifiAwareManager.setConnectionCallback { roomName, isConnected ->
-            if (isConnected) {
-                currentRoomName = roomName
-                _connectionState.value = ConnectionState.Connected(roomName)
-                loadMessagesFromDatabase(roomName)
-            } else {
-                _connectionState.value = ConnectionState.Disconnected
-            }
-            callback(roomName, isConnected)
-        }
+        // Connection state is now handled by Flow collection
     }
     
     fun stop() {
@@ -158,11 +197,12 @@ class ChatRepository @Inject constructor(
         wifiAwareManager.stop()
         _connectionState.value = ConnectionState.Disconnected
         _connectedUsers.value = emptyList()
+        repositoryScope.cancel()
     }
     
     private fun startConnectionMonitoring() {
         connectionCheckJob?.cancel()
-        connectionCheckJob = CoroutineScope(Dispatchers.IO).launch {
+        connectionCheckJob = repositoryScope.launch {
             while (isActive) {
                 delay(5000) // Check every 5 seconds
                 val timeSinceLastActivity = System.currentTimeMillis() - lastActivityTime

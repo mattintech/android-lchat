@@ -15,21 +15,21 @@
 - [x] Convert singletons to proper DI
 - [x] Inject ViewModels using Hilt
 
-### 1.3 Room Database Setup
-- [ ] Add Room dependencies
-- [ ] Create Message and User entities
-- [ ] Implement DAOs for data access
-- [ ] Create database migrations
-- [ ] Store messages in Room database
-- [ ] Load message history on app restart
-- [ ] Implement message sync logic
+### 1.3 Room Database Setup ✅
+- [x] Add Room dependencies
+- [x] Create Message and User entities
+- [x] Implement DAOs for data access
+- [x] Create database migrations
+- [x] Store messages in Room database
+- [x] Load message history on app restart
+- [x] Implement message sync logic
 
-### 1.4 Coroutines & Flow Optimization
-- [ ] Convert callbacks to coroutines
-- [ ] Use Flow for reactive data streams
-- [ ] Implement proper scope management
-- [ ] Replace GlobalScope with proper lifecycle scopes
-- [ ] Add proper error handling with coroutines
+### 1.4 Coroutines & Flow Optimization ✅
+- [x] Convert callbacks to coroutines
+- [x] Use Flow for reactive data streams
+- [x] Implement proper scope management
+- [x] Replace GlobalScope with proper lifecycle scopes
+- [x] Add proper error handling with coroutines
 
 ## Phase 2: Core UX Improvements
 
@@ -47,6 +47,16 @@
 
 ### 2.3 Enhanced Messaging Features
 - [ ] Message status indicators (sent/delivered/read)
+  - [ ] Add status field to MessageEntity (pending/sent/delivered/failed)
+  - [ ] Show status icons in message bubbles
+  - [ ] Update status when delivery confirmed
+- [ ] Store-and-forward messaging pattern
+  - [ ] Save messages with "pending" status initially
+  - [ ] Implement acknowledgment protocol in WifiAwareManager
+  - [ ] Update to "sent" only after confirmation received
+  - [ ] Queue messages when offline/disconnected
+  - [ ] Auto-retry failed messages with exponential backoff
+  - [ ] Mark messages as failed after max retries
 - [ ] User presence indicators (online/offline/typing)
 - [ ] Message timestamps with proper formatting
 - [ ] Offline message queue
@@ -160,18 +170,22 @@
 ## Current Status
 - ✅ Phase 1.1 - MVVM Architecture - COMPLETED
 - ✅ Phase 1.2 - Dependency Injection with Hilt - COMPLETED
+- ✅ Phase 1.3 - Room Database Setup - COMPLETED
+- ✅ Phase 1.4 - Coroutines & Flow Optimization - COMPLETED
 - ✅ Phase 2.1 - Connection Status Management - COMPLETED
 - 🚀 Next Priority Options:
-  - Phase 1.3 - Room Database (Foundation for persistence)
   - Phase 2.2 - User List Feature (Core UX)
   - Phase 2.3 - Enhanced Messaging (Better UX)
   - Phase 3.1 - Material 3 Update (Modern UI)
+  - Phase 3.2 - Dark Theme & Theming
 
 ## Completed Work Summary
 1. **MVVM Architecture**: ViewModels, Repository pattern, proper separation of concerns
 2. **Dependency Injection**: Hilt integration with proper scoping and lifecycle management
-3. **Connection Status**: Visual indicator with real-time updates, activity-based detection
-4. **Sleep/Wake Handling**: Auto-recovery when messages resume after device sleep
+3. **Room Database**: Message persistence with proper DAOs and entity mapping
+4. **Coroutines & Flow**: Converted callbacks to coroutines, implemented Flow for reactive streams, proper scope management
+5. **Connection Status**: Visual indicator with real-time updates, activity-based detection
+6. **Sleep/Wake Handling**: Auto-recovery when messages resume after device sleep
 
 ## Development Notes
 - Architecture foundation (Phase 1) should be completed before moving to advanced features
