@@ -49,9 +49,7 @@ class ChatRepository @Inject constructor(
     private var messageCallback: ((String, String, String) -> Unit)? = null
     private var connectionCallback: ((String, Boolean) -> Unit)? = null
     
-    private var lastActivityTime = System.currentTimeMillis()
-    private var connectionCheckJob: Job? = null
-    private val connectionTimeout = 30000L // 30 seconds
+    // Keep-alive is now handled by WifiAwareManager
     
     init {
         wifiAwareManager.initialize()
@@ -73,9 +71,6 @@ class ChatRepository @Inject constructor(
                     isOwnMessage = false
                 )
                 addMessage(message)
-                
-                // Update last activity time
-                lastActivityTime = System.currentTimeMillis()
                 
                 // If we're receiving messages, we must be connected
                 if (_connectionState.value !is ConnectionState.Connected && 
@@ -116,9 +111,10 @@ class ChatRepository @Inject constructor(
     
     fun startHostMode(roomName: String) {
         currentRoomName = roomName
+        // Ensure WifiAwareManager is initialized before starting
+        wifiAwareManager.initialize()
         wifiAwareManager.startHostMode(roomName)
         _connectionState.value = ConnectionState.Hosting(roomName)
-        startConnectionMonitoring()
         loadMessagesFromDatabase(roomName)
     }
     
@@ -137,30 +133,45 @@ class ChatRepository @Inject constructor(
     }
     
     fun startClientMode() {
-        wifiAwareManager.startClientMode()
-        _connectionState.value = ConnectionState.Searching
-        startConnectionMonitoring()
+        // Reset state for fresh start
+        _messages.value = emptyList()
+        currentRoomName = ""
+        
+        // Ensure WifiAwareManager is initialized before starting
+        repositoryScope.launch {
+            // Give Wi-Fi Aware time to stabilize after network changes
+            delay(500)
+            wifiAwareManager.initialize()
+            // Small delay to ensure initialization completes
+            delay(100)
+            wifiAwareManager.startClientMode()
+            _connectionState.value = ConnectionState.Searching
+        }
     }
     
     fun sendMessage(userId: String, userName: String, content: String) {
-        val message = Message(
-            id = UUID.randomUUID().toString(),
-            userId = userId,
-            userName = userName,
-            content = content,
-            timestamp = System.currentTimeMillis(),
-            isOwnMessage = true
-        )
-        addMessage(message)
-        wifiAwareManager.sendMessage(userId, userName, content)
-        
-        // Update last activity time
-        lastActivityTime = System.currentTimeMillis()
-        
-        // If we can send messages, update connection state if needed
-        if (_connectionState.value is ConnectionState.Disconnected || 
-            _connectionState.value is ConnectionState.Error) {
-            _connectionState.value = ConnectionState.Connected("Active")
+        // Only allow sending messages if connected or hosting
+        when (_connectionState.value) {
+            is ConnectionState.Connected, is ConnectionState.Hosting -> {
+                val message = Message(
+                    id = UUID.randomUUID().toString(),
+                    userId = userId,
+                    userName = userName,
+                    content = content,
+                    timestamp = System.currentTimeMillis(),
+                    isOwnMessage = true
+                )
+                val sent = wifiAwareManager.sendMessage(userId, userName, content)
+                if (sent) {
+                    addMessage(message)
+                } else {
+                    android.util.Log.e("ChatRepository", "Failed to send message - no active connection")
+                    _connectionState.value = ConnectionState.Disconnected
+                }
+            }
+            else -> {
+                android.util.Log.w("ChatRepository", "Cannot send message - not connected. State: ${_connectionState.value}")
+            }
         }
     }
     
@@ -193,37 +204,13 @@ class ChatRepository @Inject constructor(
     }
     
     fun stop() {
-        stopConnectionMonitoring()
         wifiAwareManager.stop()
         _connectionState.value = ConnectionState.Disconnected
         _connectedUsers.value = emptyList()
-        repositoryScope.cancel()
-    }
-    
-    private fun startConnectionMonitoring() {
-        connectionCheckJob?.cancel()
-        connectionCheckJob = repositoryScope.launch {
-            while (isActive) {
-                delay(5000) // Check every 5 seconds
-                val timeSinceLastActivity = System.currentTimeMillis() - lastActivityTime
-                
-                // If no activity for 30 seconds and we think we're connected, mark as disconnected
-                if (timeSinceLastActivity > connectionTimeout) {
-                    when (_connectionState.value) {
-                        is ConnectionState.Connected,
-                        is ConnectionState.Hosting -> {
-                            _connectionState.value = ConnectionState.Disconnected
-                        }
-                        else -> {} // Keep current state
-                    }
-                }
-            }
-        }
-    }
-    
-    private fun stopConnectionMonitoring() {
-        connectionCheckJob?.cancel()
-        connectionCheckJob = null
+        // Don't cancel the repository scope - we need it for future operations
+        // Clear messages when stopping
+        _messages.value = emptyList()
+        currentRoomName = ""
     }
     
     sealed class ConnectionState {
