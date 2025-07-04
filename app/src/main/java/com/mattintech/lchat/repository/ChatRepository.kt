@@ -3,24 +3,19 @@ package com.mattintech.lchat.repository
 import android.content.Context
 import com.mattintech.lchat.data.Message
 import com.mattintech.lchat.network.WifiAwareManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class ChatRepository private constructor(context: Context) {
-    
-    companion object {
-        @Volatile
-        private var INSTANCE: ChatRepository? = null
-        
-        fun getInstance(context: Context): ChatRepository {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: ChatRepository(context.applicationContext).also { INSTANCE = it }
-            }
-        }
-    }
+@Singleton
+class ChatRepository @Inject constructor(
+    @ApplicationContext private val context: Context
+) {
     
     private val wifiAwareManager = WifiAwareManager(context)
     
@@ -140,7 +135,7 @@ class ChatRepository private constructor(context: Context) {
     
     private fun startConnectionMonitoring() {
         connectionCheckJob?.cancel()
-        connectionCheckJob = GlobalScope.launch {
+        connectionCheckJob = CoroutineScope(Dispatchers.IO).launch {
             while (isActive) {
                 delay(5000) // Check every 5 seconds
                 val timeSinceLastActivity = System.currentTimeMillis() - lastActivityTime

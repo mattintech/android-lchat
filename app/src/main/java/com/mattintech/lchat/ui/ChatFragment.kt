@@ -6,7 +6,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.ViewModelProvider
+import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.navArgs
 import androidx.core.content.ContextCompat
@@ -17,9 +17,10 @@ import com.mattintech.lchat.repository.ChatRepository
 import com.mattintech.lchat.ui.adapters.MessageAdapter
 import com.mattintech.lchat.utils.LOG_PREFIX
 import com.mattintech.lchat.viewmodel.ChatViewModel
-import com.mattintech.lchat.viewmodel.ViewModelFactory
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 
+@AndroidEntryPoint
 class ChatFragment : Fragment() {
     
     companion object {
@@ -30,7 +31,7 @@ class ChatFragment : Fragment() {
     private val binding get() = _binding!!
     
     private val args: ChatFragmentArgs by navArgs()
-    private lateinit var viewModel: ChatViewModel
+    private val viewModel: ChatViewModel by viewModels()
     private lateinit var messageAdapter: MessageAdapter
     
     override fun onCreateView(
@@ -47,8 +48,6 @@ class ChatFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         Log.d(TAG, "onViewCreated - room: ${args.roomName}, user: ${args.userName}, isHost: ${args.isHost}")
         
-        val factory = ViewModelFactory(requireContext())
-        viewModel = ViewModelProvider(this, factory)[ChatViewModel::class.java]
         viewModel.initialize(args.roomName, args.userName, args.isHost)
         
         setupUI()

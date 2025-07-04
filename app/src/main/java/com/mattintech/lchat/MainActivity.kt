@@ -11,7 +11,9 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.snackbar.Snackbar
 import com.mattintech.lchat.databinding.ActivityMainBinding
 import com.mattintech.lchat.utils.LOG_PREFIX
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
     
     companion object {
