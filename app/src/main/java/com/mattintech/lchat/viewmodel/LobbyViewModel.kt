@@ -5,6 +5,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mattintech.lchat.repository.ChatRepository
+import com.mattintech.lchat.utils.PreferencesManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -27,7 +28,8 @@ sealed class LobbyEvent {
 
 @HiltViewModel
 class LobbyViewModel @Inject constructor(
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val preferencesManager: PreferencesManager
 ) : ViewModel() {
     
     private val _state = MutableLiveData<LobbyState>(LobbyState.Idle)
@@ -36,8 +38,16 @@ class LobbyViewModel @Inject constructor(
     private val _events = MutableLiveData<LobbyEvent?>()
     val events: LiveData<LobbyEvent?> = _events
     
+    private val _savedUserName = MutableLiveData<String?>()
+    val savedUserName: LiveData<String?> = _savedUserName
+    
     init {
         setupConnectionCallback()
+        loadSavedUserName()
+    }
+    
+    private fun loadSavedUserName() {
+        _savedUserName.value = preferencesManager.getUserName()
     }
     
     private fun setupConnectionCallback() {
@@ -65,6 +75,7 @@ class LobbyViewModel @Inject constructor(
         
         viewModelScope.launch {
             _state.value = LobbyState.Connecting
+            preferencesManager.saveUserName(userName)
             chatRepository.startHostMode(roomName)
             _events.value = LobbyEvent.NavigateToChat(roomName, userName, true)
         }
@@ -78,16 +89,24 @@ class LobbyViewModel @Inject constructor(
         
         viewModelScope.launch {
             _state.value = LobbyState.Connecting
+            preferencesManager.saveUserName(userName)
             chatRepository.startClientMode()
         }
     }
     
     fun onConnectedToRoom(roomName: String, userName: String) {
+        preferencesManager.saveUserName(userName)
         _events.value = LobbyEvent.NavigateToChat(roomName, userName, false)
     }
     
     fun clearEvent() {
         _events.value = null
+    }
+    
+    fun saveUserName(name: String) {
+        if (name.isNotBlank()) {
+            preferencesManager.saveUserName(name)
+        }
     }
     
     override fun onCleared() {
