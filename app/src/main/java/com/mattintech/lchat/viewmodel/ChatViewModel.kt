@@ -1,7 +1,5 @@
 package com.mattintech.lchat.viewmodel
 
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mattintech.lchat.data.Message
@@ -25,8 +23,8 @@ class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository
 ) : ViewModel() {
     
-    private val _state = MutableLiveData<ChatState>(ChatState.Connected)
-    val state: LiveData<ChatState> = _state
+    private val _state = MutableStateFlow<ChatState>(ChatState.Connected)
+    val state: StateFlow<ChatState> = _state.asStateFlow()
     
     private val _messagesFlow = MutableStateFlow<Flow<List<Message>>>(flowOf(emptyList()))
     
@@ -85,10 +83,8 @@ class ChatViewModel @Inject constructor(
     }
     
     fun disconnect() {
-        viewModelScope.launch {
-            chatRepository.stop()
-            _state.value = ChatState.Disconnected
-        }
+        chatRepository.stop()
+        _state.value = ChatState.Disconnected
     }
     
     override fun onCleared() {

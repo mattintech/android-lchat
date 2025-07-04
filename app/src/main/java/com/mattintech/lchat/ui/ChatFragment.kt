@@ -138,6 +138,8 @@ class ChatFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         Log.d(TAG, "onDestroyView")
+        // Disconnect when leaving the chat screen
+        viewModel.disconnect()
         _binding = null
     }
 }

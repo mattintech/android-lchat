@@ -18,6 +18,10 @@ import com.mattintech.lchat.viewmodel.LobbyState
 import com.mattintech.lchat.viewmodel.LobbyViewModel
 import com.mattintech.lchat.utils.LOG_PREFIX
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class LobbyFragment : Fragment() {
@@ -94,48 +98,60 @@ class LobbyFragment : Fragment() {
     }
     
     private fun observeViewModel() {
-        viewModel.savedUserName.observe(viewLifecycleOwner) { savedName ->
-            if (!savedName.isNullOrEmpty() && binding.nameInput.text.isNullOrEmpty()) {
-                binding.nameInput.setText(savedName)
-            }
-        }
-        
-        viewModel.state.observe(viewLifecycleOwner) { state ->
-            when (state) {
-                is LobbyState.Idle -> {
-                    binding.noRoomsText.visibility = View.GONE
-                }
-                is LobbyState.Connecting -> {
-                    if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                        binding.noRoomsText.visibility = View.VISIBLE
-                        binding.noRoomsText.text = getString(R.string.connecting)
+        // Collect saved user name
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.savedUserName.collect { savedName ->
+                    if (!savedName.isNullOrEmpty() && binding.nameInput.text.isNullOrEmpty()) {
+                        binding.nameInput.setText(savedName)
                     }
-                }
-                is LobbyState.Connected -> {
-                    if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
-                        val userName = binding.nameInput.text?.toString()?.trim() ?: ""
-                        viewModel.onConnectedToRoom(state.roomName, userName)
-                    }
-                }
-                is LobbyState.Error -> {
-                    binding.noRoomsText.visibility = View.VISIBLE
-                    binding.noRoomsText.text = state.message
-                    Toast.makeText(context, state.message, Toast.LENGTH_LONG).show()
                 }
             }
         }
         
-        viewModel.events.observe(viewLifecycleOwner) { event ->
-            when (event) {
-                is LobbyEvent.NavigateToChat -> {
-                    navigateToChat(event.roomName, event.userName, event.isHost)
-                    viewModel.clearEvent()
+        // Collect state
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    when (state) {
+                        is LobbyState.Idle -> {
+                            binding.noRoomsText.visibility = View.GONE
+                        }
+                        is LobbyState.Connecting -> {
+                            if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                                binding.noRoomsText.visibility = View.VISIBLE
+                                binding.noRoomsText.text = getString(R.string.connecting)
+                            }
+                        }
+                        is LobbyState.Connected -> {
+                            if (binding.modeRadioGroup.checkedRadioButtonId == R.id.clientRadio) {
+                                val userName = binding.nameInput.text?.toString()?.trim() ?: ""
+                                viewModel.onConnectedToRoom(state.roomName, userName)
+                            }
+                        }
+                        is LobbyState.Error -> {
+                            binding.noRoomsText.visibility = View.VISIBLE
+                            binding.noRoomsText.text = state.message
+                            Toast.makeText(context, state.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
-                is LobbyEvent.ShowError -> {
-                    Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-                    viewModel.clearEvent()
+            }
+        }
+        
+        // Collect events
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.events.collect { event ->
+                    when (event) {
+                        is LobbyEvent.NavigateToChat -> {
+                            navigateToChat(event.roomName, event.userName, event.isHost)
+                        }
+                        is LobbyEvent.ShowError -> {
+                            Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
-                null -> {}
             }
         }
     }
